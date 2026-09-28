@@ -23,7 +23,7 @@ namespace DspBlueprintOffsetMod
     {
         public const string PluginGuid = "dsp.mod.blueprintOffset";
         public const string PluginName = "蓝图偏移调节器 (Blueprint Offset Adjuster)";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.1.0";
 
         private const float QuantizeStep = 0.0001f; // 小数点后 4 位
         private static readonly Vector2 WindowSize = new Vector2(420f, 330f);
@@ -35,6 +35,11 @@ namespace DspBlueprintOffsetMod
         private string _offX = "0";
         private string _offY = "0";
         private string _offZ = "0";
+
+        // 线性变换缩放系数：x' = scaleX * x + offX
+        private string _scaleX = "1.0000";
+        private string _scaleY = "1.0000";
+        private string _scaleZ = "1.0000";
 
         private BlueprintData _loaded;      // 从剪贴板载入的蓝图
         private BlueprintData _backup;      // 应用前的备份，用于“撤销”
@@ -86,6 +91,24 @@ namespace DspBlueprintOffsetMod
             _offZ = GUILayout.TextField(_offZ);
             GUILayout.EndHorizontal();
 
+            // 线性变换缩放系数
+            GUILayout.Space(6f);
+            GUILayout.Label("缩放系数（线性变换 x' = 缩放 × x + 偏移，精确到小数点后 4 位）：");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("X", GUILayout.Width(20f));
+            _scaleX = GUILayout.TextField(_scaleX);
+            GUILayout.Label("Y(高)", GUILayout.Width(42f));
+            _scaleY = GUILayout.TextField(_scaleY);
+            GUILayout.Label("Z", GUILayout.Width(20f));
+            _scaleZ = GUILayout.TextField(_scaleZ);
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("整体放大 1.1000")) SetScaleDelta(0.1f);
+            if (GUILayout.Button("整体缩小 0.9000")) SetScaleDelta(-0.1f);
+            if (GUILayout.Button("缩放重置 1.0000")) { _scaleX = _scaleY = _scaleZ = "1.0000"; }
+            GUILayout.EndHorizontal();
+
             // 常用快捷偏移
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("↑ 0.1000")) SetOffsetDelta(0f, 0f, -1f);
@@ -126,6 +149,13 @@ namespace DspBlueprintOffsetMod
             GUILayout.EndVertical();
 
             GUI.DragWindow(new Rect(0f, 0f, float.MaxValue, 24f));
+        }
+
+        private void SetScaleDelta(float d)
+        {
+            _scaleX = Quantize(ParseFloat(_scaleX) + d).ToString("0.0000", CultureInfo.InvariantCulture);
+            _scaleY = Quantize(ParseFloat(_scaleY) + d).ToString("0.0000", CultureInfo.InvariantCulture);
+            _scaleZ = Quantize(ParseFloat(_scaleZ) + d).ToString("0.0000", CultureInfo.InvariantCulture);
         }
 
         private void SetOffsetDelta(float dx, float dy, float dz)
@@ -183,14 +213,11 @@ namespace DspBlueprintOffsetMod
             {
                 if (_backup == null) _backup = CloneBlueprint(_loaded);
 
-                float dx = Quantize(ParseFloat(_offX));
-                float dy = Quantize(ParseFloat(_offY));
-                float dz = Quantize(ParseFloat(_offZ));
-
-                OffsetBlueprint(_loaded, dx, dy, dz);
+                var t = ReadTransform();
+                TransformBlueprint(_loaded, t);
 
                 GUIUtility.systemCopyBuffer = _loaded.ToBase64String();
-                _status = $"✓ 已偏移 ({dx:0.0000}, {dy:0.0000}, {dz:0.0000}) 并写回剪贴板，可直接粘贴。";
+                _status = $"✓ 已应用线性变换并写回剪贴板，可直接粘贴。{Describe(t)}";
             }
             catch (Exception e)
             {
@@ -199,24 +226,50 @@ namespace DspBlueprintOffsetMod
             }
         }
 
-        /// <summary>对蓝图内所有建筑应用平移，坐标四舍五入到小数点后 4 位。</summary>
-        private static void OffsetBlueprint(BlueprintData bp, float dx, float dy, float dz)
+        /// <summary>读取 UI 中的线性变换参数（各坐标均量化到小数点后 4 位）。</summary>
+        private LinearTransform ReadTransform()
+        {
+            return new LinearTransform
+            {
+                scaleX = Quantize(ParseFloat(_scaleX)),
+                scaleY = Quantize(ParseFloat(_scaleY)),
+                scaleZ = Quantize(ParseFloat(_scaleZ)),
+                offX = Quantize(ParseFloat(_offX)),
+                offY = Quantize(ParseFloat(_offY)),
+                offZ = Quantize(ParseFloat(_offZ)),
+            };
+        }
+
+        private static string Describe(LinearTransform t)
+        {
+            return $"缩放 ({t.scaleX:0.0000}, {t.scaleY:0.0000}, {t.scaleZ:0.0000})，" +
+                   $"偏移 ({t.offX:0.0000}, {t.offY:0.0000}, {t.offZ:0.0000})";
+        }
+
+        /// <summary>对蓝图内所有建筑应用线性变换 x' = s·x + o，坐标四舍五入到小数点后 4 位。</summary>
+        private static void TransformBlueprint(BlueprintData bp, LinearTransform t)
         {
             if (bp.buildings == null) return;
             foreach (var b in bp.buildings)
             {
-                b.localOffset_x = Quantize(b.localOffset_x + dx);
-                b.localOffset_y = Quantize(b.localOffset_y + dy);
-                b.localOffset_z = Quantize(b.localOffset_z + dz);
+                b.localOffset_x = Quantize(b.localOffset_x * t.scaleX + t.offX);
+                b.localOffset_y = Quantize(b.localOffset_y * t.scaleY + t.offY);
+                b.localOffset_z = Quantize(b.localOffset_z * t.scaleZ + t.offZ);
 
                 // 第二端点（分拣器另一头 / 太阳帆发射器与射线接收站节点）
                 if (b.itemId > 2000 && b.itemId < 2030)
                 {
-                    b.localOffset_x2 = Quantize(b.localOffset_x2 + dx);
-                    b.localOffset_y2 = Quantize(b.localOffset_y2 + dy);
-                    b.localOffset_z2 = Quantize(b.localOffset_z2 + dz);
+                    b.localOffset_x2 = Quantize(b.localOffset_x2 * t.scaleX + t.offX);
+                    b.localOffset_y2 = Quantize(b.localOffset_y2 * t.scaleY + t.offY);
+                    b.localOffset_z2 = Quantize(b.localOffset_z2 * t.scaleZ + t.offZ);
                 }
             }
+        }
+
+        private struct LinearTransform
+        {
+            public float scaleX, scaleY, scaleZ;
+            public float offX, offY, offZ;
         }
 
         private void ApplyToLiveClipboard()
@@ -232,12 +285,9 @@ namespace DspBlueprintOffsetMod
 
                 if (_backup == null) _backup = CloneBlueprint(live);
 
-                float dx = Quantize(ParseFloat(_offX));
-                float dy = Quantize(ParseFloat(_offY));
-                float dz = Quantize(ParseFloat(_offZ));
-
-                OffsetBlueprint(live, dx, dy, dz);
-                _status = $"✓ 已对当前粘贴中的蓝图偏移 ({dx:0.0000}, {dy:0.0000}, {dz:0.0000})。";
+                var t = ReadTransform();
+                TransformBlueprint(live, t);
+                _status = $"✓ 已对当前粘贴中的蓝图应用线性变换。{Describe(t)}";
             }
             catch (Exception e)
             {
@@ -307,6 +357,7 @@ namespace DspBlueprintOffsetMod
             _loaded = null;
             _backup = null;
             _offX = _offY = _offZ = "0";
+            _scaleX = _scaleY = _scaleZ = "1.0000";
             _status = "已清空。请先在游戏里复制一个蓝图。";
         }
     }
