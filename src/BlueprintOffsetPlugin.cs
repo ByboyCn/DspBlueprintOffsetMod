@@ -36,6 +36,9 @@ namespace DspBlueprintOffsetMod
         private bool _showSettings;
         private int _layerCount;
 
+        // 换行文本样式（信息框 / 状态栏），避免长文字把窗口横向撑出屏幕
+        private GUIStyle _wrapStyle;
+
         // ---- BepInEx 配置 ----
         private ConfigEntry<float> _cfgUiScale;
         private ConfigEntry<float> _cfgUiOpacity;
@@ -108,10 +111,10 @@ namespace DspBlueprintOffsetMod
             GUI.matrix = Matrix4x4.Scale(new Vector3(s, s, 1f));
             GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp(_cfgUiOpacity.Value, 0.3f, 1.0f));
 
-            // 限制窗口大小：不超过屏幕（缩放后的逻辑坐标）
+            // 限制窗口大小：宽度固定，不随内容增长，绝不超过屏幕（缩放后的逻辑坐标）
             float maxW = Screen.width / s - 8f;
             float maxH = Screen.height / s - 8f;
-            _windowRect.width = Mathf.Clamp(_windowRect.width, 380f, Mathf.Min(560f, maxW));
+            _windowRect.width = Mathf.Clamp(460f, 380f, Mathf.Min(560f, maxW));
             _windowRect.height = Mathf.Clamp(_windowRect.height, 360f, Mathf.Min(720f, maxH));
 
             _windowRect = GUILayout.Window(0x4F53, _windowRect, DrawWindow, PluginName + " v" + PluginVersion);
@@ -126,13 +129,19 @@ namespace DspBlueprintOffsetMod
 
         private void DrawWindow(int id)
         {
+            if (_wrapStyle == null)
+            {
+                _wrapStyle = new GUIStyle(GUI.skin.label) { wordWrap = true };
+            }
+
             GUILayout.BeginVertical();
 
-            // 蓝图信息
+            // 蓝图信息（自动换行，防止长状态文字撑宽窗口）
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label(_loaded == null ? "当前蓝图：未载入" :
-                $"当前蓝图：{_loaded.buildings.Length} 个建筑，区域 {_loaded.areas.Length} 个");
-            GUILayout.Label(_status);
+                $"当前蓝图：{_loaded.buildings.Length} 个建筑，区域 {_loaded.areas.Length} 个", _wrapStyle);
+            GUILayout.Label(_status, _wrapStyle, GUILayout.Height(_wrapStyle.CalcHeight(
+                new GUIContent(_status), _windowRect.width - 30f)));
             GUILayout.EndVertical();
 
             // 缩放系数（线性变换）
